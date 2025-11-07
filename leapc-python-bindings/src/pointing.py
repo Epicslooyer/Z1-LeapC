@@ -3,6 +3,9 @@ import time
 import math
 import numpy as np
 import cv2
+from architecture.preprocessing import extract_features
+from RecordGesture import RecordGesture
+from architecture.segmentation import Segmentation
 
 def normalize(vector):
     norm = np.linalg.norm(vector)
@@ -75,16 +78,6 @@ class Canvas:
 
     def render_hands(self, event):
         self.output_image[:, :] = 0
-
-        cv2.putText(
-            self.output_image,
-            "Leap Motion Direction Detector",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            self.font_colour,
-            2,
-        )
 
         cv2.putText(
             self.output_image,
@@ -173,10 +166,15 @@ class DirectionDetector(leap.Listener):
     def __init__(self, canvas, min=50, max=2000):
         self.canvas = canvas
         self.prev_dir = None
+        self.prev_hand = None
         self.dt = None
         self.min = min
         self.max = max
         self.alpha = 0.5
+        self.sequence = []
+        self.recorder = RecordGesture()
+        self.segmentation = Segmentation(data_dir="data")
+        self.curr_label = None
     
     def vector_length(self, v):
         v = np.array(v, dtype=float)
@@ -193,6 +191,11 @@ class DirectionDetector(leap.Listener):
         dot = np.clip(np.dot(x, y), -1, 1)
         return math.degrees(math.acos(dot))
     
+    def save_gesture(self, label):
+        np.save(f"data/{label}_{int(time.time())}.npy", np.array(self.sequence))
+        self.sequence.clear()
+
+    
     def on_tracking_event(self, event):
 
         self.canvas.render_hands(event) 
@@ -202,9 +205,12 @@ class DirectionDetector(leap.Listener):
             return
         
         hand = event.hands[0] 
+        if len(event.hands) > 0:
+            #self.recorder.addframe(hand)
+            self.segmentation.addframe(hand, label=self.curr_label)
+
         index = hand.digits[1]
 
-        
         palm_pos = np.array([
             hand.palm.position.x,
             hand.palm.position.y,
@@ -216,6 +222,23 @@ class DirectionDetector(leap.Listener):
             index.bones[3].next_joint.y,
             index.bones[3].next_joint.z
         ])
+        
+        feature = extract_features(hand, self.prev_hand)
+
+        if len(self.sequence) > 0:
+            feature = self.alpha * feature + (1-self.alpha) * self.sequence[-1]
+        
+        self.sequence.append(feature)
+        self.prev_hand = hand
+
+        # Limits buffer to 2 seconds
+        if(len(self.sequence) > 60):
+            self.sequence.pop(0)
+        
+        if len(self.sequence) % 30 == 0:
+            print(f"Feature snapshot: {self.sequence[-1]}")
+        
+
         base = np.array([
             index.bones[0].prev_joint.x,
             index.bones[0].prev_joint.y,
@@ -285,11 +308,12 @@ class DirectionDetector(leap.Listener):
         else: 
             return "Forward" if z < 0 else "Backward"
 
-def main():
+def run_pointing():
     canvas = Canvas()
     detector = DirectionDetector(canvas)
     connection = leap.Connection()
     connection.add_listener(detector)
+    gestures = []
 
     running = True
 
@@ -297,12 +321,18 @@ def main():
         connection.set_tracking_mode(TrackingMode.Desktop)
 
         while running:
+            key = cv2.waitKey(1)
             cv2.imshow(canvas.name, canvas.output_image)
 
-            if cv2.waitKey(1) == ord('x'):
+            if key == ord('x'):
                 break
+
+            if key == ord('s'):
+                detector.recorder.savebuffer('move_up')
 
     cv2.destroyAllWindows()
 
+#Dynamic gestures (4 or 5, detect differentiate)
+
 if __name__ == "__main__":
-    main()
+    run_pointing()
