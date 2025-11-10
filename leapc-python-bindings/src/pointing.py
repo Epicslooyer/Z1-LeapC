@@ -4,8 +4,6 @@ import math
 import numpy as np
 import cv2
 from architecture.preprocessing import extract_features
-from RecordGesture import RecordGesture
-from architecture.segmentation import Segmentation
 
 def normalize(vector):
     norm = np.linalg.norm(vector)
@@ -172,8 +170,6 @@ class DirectionDetector(leap.Listener):
         self.max = max
         self.alpha = 0.5
         self.sequence = []
-        self.recorder = RecordGesture()
-        self.segmentation = Segmentation(data_dir="data")
         self.curr_label = None
     
     def vector_length(self, v):
@@ -205,9 +201,6 @@ class DirectionDetector(leap.Listener):
             return
         
         hand = event.hands[0] 
-        if len(event.hands) > 0:
-            #self.recorder.addframe(hand)
-            self.segmentation.addframe(hand, label=self.curr_label)
 
         index = hand.digits[1]
 
@@ -326,9 +319,6 @@ def run_pointing():
 
             if key == ord('x'):
                 break
-
-            if key == ord('s'):
-                detector.recorder.savebuffer('move_up')
 
     cv2.destroyAllWindows()
 

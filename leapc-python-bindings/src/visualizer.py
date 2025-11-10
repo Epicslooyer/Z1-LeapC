@@ -54,5 +54,6 @@ if __name__ == "__main__":
     gesture = ['clap', 'move_hand_down', 'move_hand_up', 'pause', 'point_back',
     'point_down', 'point_forward', 'point_left', 'point_right', 'point_up', 
     'pull_back', 'swipe_back', 'swipe_towards']
-    for g in gesture:
+    gesturetemp = ['point_left', 'point_right', 'point_up', 'point_down', 'point_back', 'point_forward']
+    for g in gesturetemp:
         visualize_label(g)
