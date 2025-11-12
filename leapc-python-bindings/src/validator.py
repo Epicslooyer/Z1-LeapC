@@ -71,7 +71,7 @@ def validate_collected_data(data_dir="data"):
         # 3. Detect outlier samples using robust statistics
         # Use median absolute deviation (MAD) - more robust than std
         sample_medians = np.median(sample_means, axis=0)
-        mad = np.median(np.abs(sample_means - sample_medians), axis=0)
+        mad = np.median(np.abs(sample_means - sample_medians), axis=0) + 1e-9
         
         outlier_threshold = 3.5  # MAD-based threshold
         outliers = []
@@ -96,10 +96,10 @@ def validate_collected_data(data_dir="data"):
             
             # Compute frame-to-frame differences
             diffs = np.diff(trajectory, axis=0)  # (89, n_features)
-            diff_norms = np.linalg.norm(diffs, axis=1)  # (89,)
+            diff_norms = np.linalg.norm(diffs, axis=1) 
             
             # Find sudden jumps (>5x median jump size)
-            median_jump = np.median(diff_norms)
+            median_jump = np.median(diff_norms) + 1e-9
             max_jump = diff_norms.max()
             
             if max_jump > 5 * median_jump and max_jump > 10:
@@ -113,12 +113,12 @@ def validate_collected_data(data_dir="data"):
         
         if is_static:
             # Static gestures should have low temporal variance
-            if temporal_var.mean() > 50:
+            if temporal_var.mean() > 1.0:
                 print(f"  ⚠️  Static gesture has high temporal variance "
                       f"({temporal_var.mean():.1f}) - check if gesture was held still")
         else:
             # Dynamic gestures should have reasonable temporal variance
-            if temporal_var.mean() < 5:
+            if temporal_var.mean() < 0.5 and gesture != "clap":
                 print(f"  ⚠️  Dynamic gesture has very low temporal variance "
                       f"({temporal_var.mean():.1f}) - gestures may be too slow/small")
         

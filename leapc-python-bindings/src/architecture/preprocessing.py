@@ -3,9 +3,11 @@ import numpy as np
 def vec_to_np(vec):
     return np.array([vec.x, vec.y, vec.z], dtype=float)
 
+epsilon = 1e-8
+
 def extract_features(hand, prev_data, prev_data_2):
+    # 19 features, (5*3 tips) + (1*3 local velocity) + 1 scalar speed, trying feature extraction instead of real world data
     try:
-        epsilon = 1e-8
 
         def bone_direction(bone):
             diff = vec_to_np(bone.next_joint) - vec_to_np(bone.prev_joint)
@@ -20,12 +22,16 @@ def extract_features(hand, prev_data, prev_data_2):
 
         if np.linalg.norm(normal) < epsilon or np.linalg.norm(normal) < epsilon:
             print("Normal or direction is too small")
-            return np.zeros(88) # (5 fingers * 3 tips) + (5*4*3 bone directions) + 2(3+3) +1
+            return np.zeros(19) 
 
         #Local frame
         right = np.cross(direction, normal)
         right_norm = np.linalg.norm(right)
-        right = right / (right_norm + epsilon)
+        if right_norm < epsilon:
+            print("Right is too small")
+            return np.zeros(19)
+
+        right = right / right_norm
         R = np.column_stack([right, normal, direction])
 
         fingerfeatures = []
@@ -34,38 +40,27 @@ def extract_features(hand, prev_data, prev_data_2):
             reltip = globaltip - palm
             localtip = R.T @ reltip
             fingerfeatures.extend(localtip)
-
-            for bone in range(4):
-                globalbone = bone_direction(digit.bones[bone])
-                relbone = R.T @ globalbone
-                fingerfeatures.extend(relbone)
         
-        palmvellocal, palmaccellocal = [np.zeros(3) for i in range(2)]
+        palmvellocal = np.zeros(3)
+        speed =0.0
 
         if prev_data is not None:
             prev_palm = vec_to_np(prev_data.palm.position)
             palm_vel = (palm - prev_palm)
             palmvellocal = R.T @ palm_vel
+            speed = np.linalg.norm(palm_vel)
 
+        feature = np.concatenate([np.array(fingerfeatures), palmvellocal, [speed]])
 
-        if prev_data_2 is not None and prev_data is not None:
-            prev_palm_2 = vec_to_np(prev_data_2.palm.position)
-            palm_accel = palm - 2*prev_palm + prev_palm_2
-            palmaccellocal = R.T @ palm_accel
-        
-        # Scalar invariants
-        speed = np.linalg.norm(palmvellocal)
-        
-        feature = np.concatenate([
-            np.array(fingerfeatures),
-            direction, normal, palmvellocal, palmaccellocal, [speed]
-        ])
+        if len(feature) != 19:
+            print("Feature length is not 19")
+            return np.zeros(19)
         
         return feature
     
     except Exception as e:
         print(f"Error extracting features: {e}")
-        return np.zeros(88)
+        return np.zeros(19)
 
 def twohand_extract_feature(hand1, hand2):
     
@@ -73,8 +68,13 @@ def twohand_extract_feature(hand1, hand2):
     palm2 = vec_to_np(hand2.palm.position)
     palm1vel = vec_to_np(hand1.palm.velocity)
     palm2vel = vec_to_np(hand2.palm.velocity)
-    palmdist = np.linalg.norm(palm1 - palm2) / 100.0
-    relvel = (palm1vel - palm2vel) / 100.0
 
-    feature = np.concatenate([[palmdist], relvel])
+    palmdist = np.linalg.norm(palm1 - palm2) / 100.0
+    relvelvec = (palm1vel - palm2vel) / 100.0
+    relvelnorm = np.linalg.norm(relvelvec)
+
+    relpos = palm1 - palm2
+    approachspeed = np.dot(relvelvec, relpos / (np.linalg.norm(relpos) + epsilon))
+    feature = np.array([palmdist, relvelnorm, approachspeed]) #pad to 4
     return feature
+

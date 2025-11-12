@@ -3,7 +3,37 @@ import time
 import math
 import numpy as np
 import cv2
-from architecture.preprocessing import extract_features
+from architecture.preprocessing import extract_features, twohand_extract_feature
+import joblib 
+from collections import deque, Counter
+import os
+from hmmlearn.hmm import GMMHMM
+
+
+def load_models(model_path = "src/architecture/models"):
+    try:
+        hmms = joblib.load(os.path.join(model_path, "gesture_models.pkl"))
+        knn = joblib.load(os.path.join(model_path, "static_gesture_knn.pkl"))
+        scalar19f = joblib.load(os.path.join(model_path, "scaler_19f.pkl"))
+        scalar3f = joblib.load(os.path.join(model_path, "scaler_3f.pkl"))
+        return hmms, knn, scalar19f, scalar3f
+    except Exception as e:
+        print(f"error load models: {e}")
+        exit(1)
+
+class TemporalSmoothening:
+    def __init__(self, buffersize = 15):
+        self.buffer = deque(maxlen = buffersize)
+        self.lastpredict = 'NAN'
+    
+    def smooth(self, prediction):
+        self.buffer.append(prediction)
+        likely = Counter(self.buffer).most_common(1)[0]
+        if likely[1] > len(self.buffer) // 2:
+            self.lastpredict = likely[0]
+        return self.lastpredict
+
+hmm_models, knn_models, scaler19f, scaler3f = load_models()
 
 def normalize(vector):
     norm = np.linalg.norm(vector)
@@ -63,6 +93,7 @@ class Canvas:
         self.tracking_mode = None
         self.current_direction = "No hands detected"
         self.palm_direction_text = ""
+        self.predict = "NAN"
 
     def set_tracking_mode(self, tracking_mode):
         self.tracking_mode = tracking_mode
@@ -76,6 +107,16 @@ class Canvas:
 
     def render_hands(self, event):
         self.output_image[:, :] = 0
+
+        cv2.putText(
+            self.output_image,
+            f"Predict: {self.predict}",
+            (10, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            self.font_colour,
+            3,
+        )
 
         cv2.putText(
             self.output_image,
@@ -160,6 +201,7 @@ class Canvas:
                     if index_bone == 0 and bone_start and wrist:
                         cv2.line(self.output_image, bone_start, wrist, self.hands_colour, 2)
 
+#Old outdated direction detector
 class DirectionDetector(leap.Listener):
     def __init__(self, canvas, min=50, max=2000):
         self.canvas = canvas
@@ -216,7 +258,7 @@ class DirectionDetector(leap.Listener):
             index.bones[3].next_joint.z
         ])
         
-        feature = extract_features(hand, self.prev_hand)
+        feature = extract_features(hand, self.prev_hand, self.prev_hand2)
 
         if len(self.sequence) > 0:
             feature = self.alpha * feature + (1-self.alpha) * self.sequence[-1]
@@ -301,17 +343,105 @@ class DirectionDetector(leap.Listener):
         else: 
             return "Forward" if z < 0 else "Backward"
 
+#New HMM-based gesture detector
+class GestureDetector(leap.Listener):
+    def __init__(self, canvas):
+        super().__init__()
+        self.canvas = canvas
+        self.prevhand = None
+        self.prevhand2 = None
+        self.featurebuffer19f = deque(maxlen = 90)
+        self.featurebuffer3f = deque(maxlen = 90)
+        self.smoothening = TemporalSmoothening(buffersize = 15)
+    
+    def on_tracking_event(self, event):
+        self.canvas.render_hands(event)
+
+        # Feature extraction
+        if len(event.hands) == 1:
+            hand = event.hands[0]
+            feature = extract_features(hand, self.prevhand, self.prevhand2)
+            self.featurebuffer19f.append(feature)
+            self.featurebuffer3f.clear()
+            self.prevhand2 = self.prevhand
+            self.prevhand = hand
+            self.predict_single(feature)
+
+        elif len(event.hands) == 2:
+            hand1, hand2 = event.hands[0], event.hands[1]
+            feature = twohand_extract_feature(hand1, hand2)
+            self.featurebuffer3f.append(feature)
+            self.featurebuffer19f.clear()
+            self.prevhand2 = None
+            self.prevhand = None
+            self.predict_twohand(feature)
+
+        else:
+            self.prevhand = None
+            self.prevhand2 = None
+            self.featurebuffer19f.clear()
+            self.featurebuffer3f.clear()
+            self.canvas.predict = self.smoothening.smooth("NAN")
+    
+    def predict_single(self, feature):
+        optimal = "NAN"
+        maxscore = -float('inf')
+
+        #KNN classifier
+        try:
+            scalefeatures = scaler19f.transform([feature])
+            staticpredict = knn_models.predict(scalefeatures)[0]
+            staticscore = -1000
+            maxscore = staticscore
+            optimal = staticpredict
+
+        except Exception as e:
+            print(f"Error predicting single hand gesture: {e}")
+        
+        if len(self.featurebuffer19f) == 90:
+            try:
+                sequence = np.array(self.featurebuffer19f)
+                scalesequence = scaler19f.transform(sequence)
+                models = {k: v for k, v in hmm_models.items() if k != "clap"}
+
+                for label, model in models.items():
+                    score = model.score(scalesequence)
+                    if score > bestscore:
+                        bestscore = score
+                        bestpredict = label
+            except Exception as e:
+                print(f"Error predicting dynamic gesture: {e}")
+        
+        self.canvas.predict = self.smoothening.smooth(optimal)
+    
+    def predict_twohand(self, feature):
+        optimal = "NAN"
+        maxscore = -float('inf')
+
+        if len(self.featurebuffer3f) == 90:
+            try:
+                sequence = np.array(self.featurebuffer3f)
+                scalesequence = scaler3f.transform(sequence)
+                models = {k: v for k, v in hmm_models.items() if k == "clap"}
+                score = models["clap"].score(scalesequence)
+                if score > maxscore:
+                    maxscore = score
+                    optimal = "clap"
+            except Exception as e:
+                print(f"Error predicting two hand gesture: {e}")
+        
+        self.canvas.predict = self.smoothening.smooth(optimal)
+
 def run_pointing():
     canvas = Canvas()
-    detector = DirectionDetector(canvas)
+    detector = GestureDetector(canvas)
     connection = leap.Connection()
     connection.add_listener(detector)
-    gestures = []
-
     running = True
 
     with connection.open():
         connection.set_tracking_mode(TrackingMode.Desktop)
+        canvas.set_tracking_mode(TrackingMode.Desktop)
 
         while running:
             key = cv2.waitKey(1)
