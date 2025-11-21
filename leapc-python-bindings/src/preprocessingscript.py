@@ -8,15 +8,15 @@ from architecture.preprocessing import twohand_extract_feature
 from sklearn.preprocessing import StandardScaler
 
 GESTURE_SET = [
-    "swipe back", "pull back"
+    "swipe back", "pull back", "background"
 ]
 
-LEFT_GESTURE_SET = [
+GESTURE_LEFT = [
     "point up", "point down", "point forward", "point back",
     "point left", "point right",
     "move hand up", "move hand down",
     "pause", "clap",
-    "swipe towards", "swipe back", "pull back"
+    "swipe towards", 
 ]
 
 twohand_gestures = ["clap"]
@@ -148,14 +148,14 @@ def collect_samples(data_dir = "data"):
             sample = len([f for f in os.listdir(os.path.join(data_dir, gesture.replace(" ", "_"))) if f.endswith(".npy")])
             print(f"Preparing to record gesture: '{gesture}' ({sample} existing samples)")
 
-            while sample < 10:
+            while sample < 50:
                 listener = addlistener(os.path.join(data_dir, gesture.replace(" ", "_")), gesture, sample)
                 connection.add_listener(listener)
 
                 while True:
                     img = np.zeros((1000, 1400, 3), dtype = np.uint8)
                     cv2.putText(img, f"Gesture: {gesture}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255))
-                    cv2.putText(img, f"Sample: {sample+1}/10", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255))
+                    cv2.putText(img, f"Sample: {sample+1}/50", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255))
                     
                     visualizer_2d = img[:, 450:]
                     hands = listener.get_hand()

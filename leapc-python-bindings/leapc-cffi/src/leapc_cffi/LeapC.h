@@ -1667,26 +1667,6 @@ typedef enum _eLeapHandType {
 } eLeapHandType;
 LEAP_STATIC_ASSERT(sizeof(eLeapHandType) == 4, "Incorrect enum size");
 
-/** \ingroup Enum
- * LEAP_HAND flag definitions.
- * Used in the LEAP_HAND struct
- * @since 6.2.0
- */
-typedef enum _eLeapHandFlag {
-  /** Gesture detection is available @since 6.2.0 */
-  eLeapHandFlag_GestureDetectionAvailable = 1 << 0,
-
-  /** Pinch @since 6.2.0 */
-  eLeapHandFlag_GesturePinch = 1 << 1,
-
-  /** Moving pinch opening @since 6.2.0 */
-  eLeapHandFlag_GestureMovingPinchOpening = 1 << 2,
-
-  /** Moving pinch closing @since 6.2.0 */
-  eLeapHandFlag_GestureMovingPinchClosing = 1 << 3,
-} eLeapHandFlag;
-LEAP_STATIC_ASSERT(sizeof(eLeapHandFlag) == 4, "Incorrect enum size");
-
 /** \ingroup Structs
  * Describes a tracked hand. @since 3.0.0
  */
@@ -1700,7 +1680,7 @@ typedef struct _LEAP_HAND {
   uint32_t id;
 
   /**
-   * A combination of values from the eLeapHandFlag enumeration. @since 6.2.0
+   * Reserved for future use. @since 3.0.0
    */
   uint32_t flags;
 

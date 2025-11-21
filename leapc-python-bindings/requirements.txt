@@ -2,4 +2,3 @@ build
 cffi
 opencv-python
 numpy
-scikit-learn

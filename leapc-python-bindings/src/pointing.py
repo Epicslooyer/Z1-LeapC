@@ -7,18 +7,32 @@ from architecture.preprocessing import extract_features, twohand_extract_feature
 import joblib 
 from collections import deque, Counter
 import os
-from hmmlearn.hmm import GMMHMM
+from architecture.model_cnn import Net
+import torch
+import torch.nn as nn
+from middlware import passgesture
 
 
 def load_models(model_path = "src/architecture/models"):
     try:
-        hmms = joblib.load(os.path.join(model_path, "gesture_models.pkl"))
-        knn = joblib.load(os.path.join(model_path, "static_gesture_knn.pkl"))
-        scalar19f = joblib.load(os.path.join(model_path, "scaler_19f.pkl"))
-        scalar3f = joblib.load(os.path.join(model_path, "scaler_3f.pkl"))
-        return hmms, knn, scalar19f, scalar3f
+        classes = np.load(os.path.join(model_path, "classes.npy"))
+        model = Net(len(classes))
+        model.load_state_dict(torch.load(os.path.join(model_path, "gesture_model_cnn.pth")))
+
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            print("ERROR: CUDA not available")
+            exit(1)
+        model.to(device)
+        model.eval()
+        print("Models loaded successfully")
+
+        scaler = joblib.load(os.path.join(model_path, "scalerCNN.pkl"))
+        return model, scaler, classes, device
+
     except Exception as e:
-        print(f"error load models: {e}")
+        print(f"error loading models: {e}")
         exit(1)
 
 class TemporalSmoothening:
@@ -33,7 +47,9 @@ class TemporalSmoothening:
             self.lastpredict = likely[0]
         return self.lastpredict
 
-hmm_models, knn_models, scaler19f, scaler3f = load_models()
+
+#hmm_models, knn_models, scaler19f, scaler3f
+model, scaler, classes, device = load_models()
 
 def normalize(vector):
     norm = np.linalg.norm(vector)
@@ -84,7 +100,7 @@ class DirectionVector:
 
 class Canvas:
     def __init__(self):
-        self.name = "Leap Motion Direction Detector"
+        self.name = "Gesture Detector"
         self.screen_size = [500, 700]
         self.hands_colour = (255, 255, 255)
         self.font_colour = (0, 255, 44)
@@ -343,16 +359,17 @@ class DirectionDetector(leap.Listener):
         else: 
             return "Forward" if z < 0 else "Backward"
 
-#New HMM-based gesture detector
+
 class GestureDetector(leap.Listener):
     def __init__(self, canvas):
         super().__init__()
         self.canvas = canvas
         self.prevhand = None
         self.prevhand2 = None
-        self.featurebuffer19f = deque(maxlen = 90)
-        self.featurebuffer3f = deque(maxlen = 90)
+        self.featurebuffer = deque(maxlen = 90)
         self.smoothening = TemporalSmoothening(buffersize = 15)
+        self.eval_interval = 0.1
+        self.last_eval = 0.0
     
     def on_tracking_event(self, event):
         self.canvas.render_hands(event)
@@ -361,76 +378,45 @@ class GestureDetector(leap.Listener):
         if len(event.hands) == 1:
             hand = event.hands[0]
             feature = extract_features(hand, self.prevhand, self.prevhand2)
-            self.featurebuffer19f.append(feature)
-            self.featurebuffer3f.clear()
+            self.featurebuffer.append(feature)
             self.prevhand2 = self.prevhand
             self.prevhand = hand
-            self.predict_single(feature)
+            self.predict()
+            passgesture(feature)
 
+        #Update for clapping in future
         elif len(event.hands) == 2:
-            hand1, hand2 = event.hands[0], event.hands[1]
-            feature = twohand_extract_feature(hand1, hand2)
-            self.featurebuffer3f.append(feature)
-            self.featurebuffer19f.clear()
             self.prevhand2 = None
             self.prevhand = None
-            self.predict_twohand(feature)
+            self.featurebuffer.clear()
+            self.canvas.predict = self.smoothening.smooth("NAN")
 
         else:
             self.prevhand = None
             self.prevhand2 = None
-            self.featurebuffer19f.clear()
-            self.featurebuffer3f.clear()
+            self.featurebuffer.clear()
             self.canvas.predict = self.smoothening.smooth("NAN")
     
-    def predict_single(self, feature):
-        optimal = "NAN"
-        maxscore = -float('inf')
+    def predict(self):
+        currtime = time.perf_counter()
+        if (len(self.featurebuffer) == 90 and currtime - self.last_eval >= self.eval_interval):
+            self.last_eval = currtime
 
-        #KNN classifier
-        try:
-            scalefeatures = scaler19f.transform([feature])
-            staticpredict = knn_models.predict(scalefeatures)[0]
-            staticscore = -1000
-            maxscore = staticscore
-            optimal = staticpredict
-
-        except Exception as e:
-            print(f"Error predicting single hand gesture: {e}")
-        
-        if len(self.featurebuffer19f) == 90:
             try:
-                sequence = np.array(self.featurebuffer19f)
-                scalesequence = scaler19f.transform(sequence)
-                models = {k: v for k, v in hmm_models.items() if k != "clap"}
+                sequence = np.array(self.featurebuffer)
+                scaled_sequence = scaler.transform(sequence)
+                tensor = torch.tensor(scaled_sequence, dtype=torch.float32).unsqueeze(0).to(device)
 
-                for label, model in models.items():
-                    score = model.score(scalesequence)
-                    if score > bestscore:
-                        bestscore = score
-                        bestpredict = label
+                with torch.no_grad():
+                    predictions = model(tensor)
+                    i, predictionindex = torch.max(predictions, 1)
+                
+                predicted = classes[predictionindex.item()]
+                self.canvas.predict = self.smoothening.smooth(predicted)
+            
             except Exception as e:
-                print(f"Error predicting dynamic gesture: {e}")
-        
-        self.canvas.predict = self.smoothening.smooth(optimal)
+                print(f"Error predicting gesture: {e}")
     
-    def predict_twohand(self, feature):
-        optimal = "NAN"
-        maxscore = -float('inf')
-
-        if len(self.featurebuffer3f) == 90:
-            try:
-                sequence = np.array(self.featurebuffer3f)
-                scalesequence = scaler3f.transform(sequence)
-                models = {k: v for k, v in hmm_models.items() if k == "clap"}
-                score = models["clap"].score(scalesequence)
-                if score > maxscore:
-                    maxscore = score
-                    optimal = "clap"
-            except Exception as e:
-                print(f"Error predicting two hand gesture: {e}")
-        
-        self.canvas.predict = self.smoothening.smooth(optimal)
 
 def run_pointing():
     canvas = Canvas()
