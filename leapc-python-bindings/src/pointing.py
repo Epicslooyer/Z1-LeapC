@@ -11,6 +11,14 @@ from architecture.model_cnn import Net
 import torch
 import torch.nn as nn
 from middlware import passgesture
+import rospy
+import rospkg
+
+def ros_init():
+    rospy.init_node("gesture_detector", anonymous=True)
+    pubgesture = rospy.Publisher("/gesture", String, queue_size=10)
+    pubconf = rospy.Publisher("/confidence", Float32, queue_size=10)
+    return pubgesture, pubconf
 
 
 def load_models(model_path = "src/architecture/models"):
@@ -361,7 +369,7 @@ class DirectionDetector(leap.Listener):
 
 
 class GestureDetector(leap.Listener):
-    def __init__(self, canvas):
+    def __init__(self, canvas, rospubs):
         super().__init__()
         self.canvas = canvas
         self.prevhand = None
@@ -370,7 +378,9 @@ class GestureDetector(leap.Listener):
         self.smoothening = TemporalSmoothening(buffersize = 15)
         self.eval_interval = 0.1
         self.last_eval = 0.0
-    
+        self.pubgesture, self.pubconf = rospubs
+        self.THRESHOLD = 0.85
+        
     def on_tracking_event(self, event):
         self.canvas.render_hands(event)
 
@@ -409,10 +419,20 @@ class GestureDetector(leap.Listener):
 
                 with torch.no_grad():
                     predictions = model(tensor)
-                    i, predictionindex = torch.max(predictions, 1)
+                    probability = torch.nn.functional.softmax(predictions, dim=1)
+                    confidence, predictionindex = torch.max(probability, 1)
+                    confidencescore = confidence.item()
+                    predicted = classes[predictionindex.item()]
                 
-                predicted = classes[predictionindex.item()]
-                self.canvas.predict = self.smoothening.smooth(predicted)
+                finalgesture = 'NAN'
+                if confidencescore >= self.THRESHOLD and predicted != "background":
+                    finalgesture = predicted
+                    if not rospy.is_shutdown():
+                        self.pubgesture.publish(finalgesture)
+                        self.pubconf.publish(confidencescore)
+                        print(f"Predicted gesture: {finalgesture} with confidence: {confidencescore}")
+
+                self.canvas.predict = self.smoothening.smooth(finalgesture)
             
             except Exception as e:
                 print(f"Error predicting gesture: {e}")
@@ -420,7 +440,7 @@ class GestureDetector(leap.Listener):
 
 def run_pointing():
     canvas = Canvas()
-    detector = GestureDetector(canvas)
+    detector = GestureDetector(canvas, ros_init())
     connection = leap.Connection()
     connection.add_listener(detector)
     running = True
