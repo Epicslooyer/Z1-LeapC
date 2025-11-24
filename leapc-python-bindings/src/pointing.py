@@ -10,7 +10,7 @@ import os
 from architecture.model_cnn import Net
 import torch
 import torch.nn as nn
-from middlware import passgesture
+from middleware import passgesture
 
 
 def load_models(model_path = "src/architecture/models"):
@@ -370,6 +370,7 @@ class GestureDetector(leap.Listener):
         self.smoothening = TemporalSmoothening(buffersize = 15)
         self.eval_interval = 0.1
         self.last_eval = 0.0
+        self.threshold = 0.85
     
     def on_tracking_event(self, event):
         self.canvas.render_hands(event)
@@ -382,7 +383,6 @@ class GestureDetector(leap.Listener):
             self.prevhand2 = self.prevhand
             self.prevhand = hand
             self.predict()
-            passgesture(feature)
 
         #Update for clapping in future
         elif len(event.hands) == 2:
@@ -408,11 +408,18 @@ class GestureDetector(leap.Listener):
                 tensor = torch.tensor(scaled_sequence, dtype=torch.float32).unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    predictions = model(tensor)
-                    i, predictionindex = torch.max(predictions, 1)
+                    output = model(tensor)
+                    pr = torch.nn.functional.softmax(output, dim=1)
+                    confidenceobj, predictionindex = torch.max(pr, 1)
+                    confidence = confidenceobj.item()
+                    prediction = classes[predictionindex.item()]
                 
-                predicted = classes[predictionindex.item()]
-                self.canvas.predict = self.smoothening.smooth(predicted)
+                finalprediction = 'NAN'
+                if confidence > self.threshold:
+                    finalprediction = prediction
+                    passgesture(finalprediction)
+
+                self.canvas.predict = self.smoothening.smooth(finalprediction)
             
             except Exception as e:
                 print(f"Error predicting gesture: {e}")

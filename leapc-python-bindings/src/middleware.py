@@ -1,7 +1,6 @@
 import socket
-import rclpy
-from rclpy.node import Node
 
+'''
 class ReceiverNode(Node):
     def __init__(self):
         super().__init__("receiver_node")
@@ -20,11 +19,7 @@ class ReceiverNode(Node):
             self.pub.publish(msg)
         except BlockingIOError:
             return
+'''
 
-
-if __name__ == "__main__":
-    rclpy.init()
-    node = ReceiverNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+def passgesture(gesture):
+    print(f"Gesture: {gesture}")
