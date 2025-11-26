@@ -10,7 +10,6 @@ import os
 from architecture.model_cnn import Net
 import torch
 import torch.nn as nn
-from bridge import Bridge
 from middleware import server
 from policy import Brain
 import threading
@@ -20,11 +19,7 @@ import sys
 #Local or remote mode
 brain = Brain(train=False)
 MODE = str(sys.argv[1])
-if MODE == "local":
-    bridge = None
-elif MODE == "remote":
-    bridge = Bridge("ws://192.168.123.100:8765")
-else:
+if MODE not in {"local", "remote"}:
     print("Invalid mode")
     exit(1)
 
@@ -38,6 +33,18 @@ def start_server():
 
 
 threading.Thread(target=start_server, daemon=True).start()
+
+
+def emit_remote(message: dict) -> None:
+    loop = getattr(server, "loop", None)
+    if loop is None or not loop.is_running():
+        print("[Bridge]: Data server loop not ready; dropping message")
+        return
+
+    try:
+        asyncio.run_coroutine_threadsafe(server.broadcast(message), loop)
+    except Exception as exc:
+        print(f"[Bridge]: Failed to broadcast message: {exc}")
 
 #Loads CNN model
 def load_models(model_path = "src/architecture/models"):
@@ -471,12 +478,12 @@ class GestureDetector(leap.Listener):
                 if confidence > self.threshold:
                     finalprediction = prediction
 
-                    self.history.append(finalprediction)
+                    self.history.append((finalprediction, confidence))
                     
                     if len(self.history) == self.stableframes:
                         stable = all(
-                            history[0] == finalprediction and history[1] > self.threshold
-                            for history in self.history
+                            label == finalprediction and conf >= self.threshold
+                            for label, conf in self.history
                         )
                     else:
                         stable = False
@@ -493,30 +500,31 @@ class GestureDetector(leap.Listener):
                                 "grippercmd": int(action["grippercmd"]),
                             }
                             
-                            if finalprediction == self.last_gesture:
-                                pass
-                            else:
-                                curr = time.time()
-                                if curr - self.last_time >= self.hertz:
-                                    motion = False
+                            curr = time.time()
+                            if curr - self.last_time >= self.hertz:
+                                motion = False
 
-                                    if self.last_velocity is not None:
+                                if self.last_velocity is None or self.last_targetpos is None:
+                                    motion = True
+                                else:
+                                    dv = np.linalg.norm(action["velocity"] - self.last_velocity)
+                                    tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
+                                    if dv > self.delta or tp > self.delta:
                                         motion = True
+
+                                if finalprediction != self.last_gesture:
+                                    motion = True
+
+                                if motion:
+                                    if MODE == "remote":
+                                        emit_remote(message)
                                     else:
-                                        dv = np.linalg.norm(action["velocity"] - self.last_velocity)
-                                        tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
-                                        if dv > self.delta or tp > self.delta:
-                                            motion = True
-                                        if motion:
-                                            if MODE == "remote":
-                                                bridge.send(message)
-                                            else:
-                                                print(f"[LOCAL] Predicted gesture: {finalprediction} with confidence: {confidence}")
-                                                print(f"[Local] action: {message}")
-                                            self.last_time = curr
-                                            self.last_gesture = finalprediction
-                                            self.last_velocity = action["velocity"].copy()
-                                            self.last_targetpos = action["targetpos"].copy()
+                                        print(f"[LOCAL] Predicted gesture: {finalprediction} with confidence: {confidence}")
+                                        print(f"[Local] action: {message}")
+                                    self.last_time = curr
+                                    self.last_gesture = finalprediction
+                                    self.last_velocity = action["velocity"].copy()
+                                    self.last_targetpos = action["targetpos"].copy()
 
                 self.canvas.predict = self.smoothening.smooth(finalprediction)
             

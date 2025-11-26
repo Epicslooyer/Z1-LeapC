@@ -16,6 +16,19 @@ GESTURE_MAP = {
     "background": 5
 }
 
+GESTURE_ALIASES = {
+    "point forward": "swipe towards",
+    "point back": "swipe back",
+    "move hand up": "point up",
+    "move hand down": "point down",
+    "pause": "background",
+}
+
+CUSTOM_ACTIONS = {
+    "point left": {"cmdid": 6, "velocity": np.array([-0.2, 0.0, 0.0]), "gripper": 0.0},
+    "point right": {"cmdid": 7, "velocity": np.array([0.2, 0.0, 0.0]), "gripper": 0.0},
+}
+
 class GestureMLP(nn.Module):
     def __init__(self, numgestures, hiddensize, numactions):
         super(GestureMLP, self).__init__()
@@ -118,11 +131,16 @@ class Brain:
                 print("Policy trained and saved")
 
     def action(self, gesture):
-        if gesture not in GESTURE_MAP:
+        if gesture in CUSTOM_ACTIONS:
+            return self._custom_action(gesture, CUSTOM_ACTIONS[gesture])
+
+        canonical = GESTURE_ALIASES.get(gesture, gesture)
+
+        if canonical not in GESTURE_MAP:
             print(f"Invalid gesture: {gesture}")
             return None
         
-        cmdid = GESTURE_MAP[gesture]
+        cmdid = GESTURE_MAP[canonical]
         self.env.setcmd(cmdid)
         obs = self.env._get_obs()
         action, _ = self.model.predict(obs, deterministic=True)
@@ -135,6 +153,21 @@ class Brain:
             "targetpos": targetpos,
             "grippercmd": grippercmd,
             "cmdid": cmdid
+        }
+
+    def _custom_action(self, gesture, spec):
+        obs = self.env._get_obs()
+        currpos = obs[:3]
+        velocity = spec["velocity"]
+        targetpos = currpos + (velocity * 0.5)
+        grippercmd = spec.get("gripper", 0.0)
+        cmdid = spec["cmdid"]
+
+        return {
+            "velocity": velocity,
+            "targetpos": targetpos,
+            "grippercmd": grippercmd,
+            "cmdid": cmdid,
         }
 
 def simulation():
