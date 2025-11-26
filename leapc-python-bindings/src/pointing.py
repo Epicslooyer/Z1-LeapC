@@ -10,9 +10,36 @@ import os
 from architecture.model_cnn import Net
 import torch
 import torch.nn as nn
-from middleware import passgesture
+from bridge import Bridge
+from middleware import server
+from policy import Brain
+import threading
+import asyncio
+import sys
+
+#Local or remote mode
+brain = Brain(train=False)
+MODE = str(sys.argv[1])
+if MODE == "local":
+    bridge = None
+elif MODE == "remote":
+    bridge = Bridge("ws://192.168.123.100:8765")
+else:
+    print("Invalid mode")
+    exit(1)
 
 
+def start_server():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    server.loop = loop
+    loop.create_task(server.start())
+    loop.run_forever()
+
+
+threading.Thread(target=start_server, daemon=True).start()
+
+#Loads CNN model
 def load_models(model_path = "src/architecture/models"):
     try:
         classes = np.load(os.path.join(model_path, "classes.npy"))
@@ -35,6 +62,7 @@ def load_models(model_path = "src/architecture/models"):
         print(f"error loading models: {e}")
         exit(1)
 
+#Temporal smoothening for prediction
 class TemporalSmoothening:
     def __init__(self, buffersize = 15):
         self.buffer = deque(maxlen = buffersize)
@@ -48,9 +76,10 @@ class TemporalSmoothening:
         return self.lastpredict
 
 
-#hmm_models, knn_models, scaler19f, scaler3f
+#Loads model
 model, scaler, classes, device = load_models()
 
+#Useless classes, was used in older version
 def normalize(vector):
     norm = np.linalg.norm(vector)
     return vector / norm if norm > 0 else vector
@@ -70,7 +99,7 @@ def intersection(p, d, point, normal):
     t = np.dot(n, point - p) / d_dot_n
     return p + t * d
 
-
+#Importing TrackingMode
 try:
     TrackingMode = leap.TrackingMode
 except AttributeError:
@@ -98,6 +127,7 @@ class DirectionVector:
         self.y = y
         self.z = z
 
+#UI to display hand and prediction
 class Canvas:
     def __init__(self):
         self.name = "Gesture Detector"
@@ -359,9 +389,9 @@ class DirectionDetector(leap.Listener):
         else: 
             return "Forward" if z < 0 else "Backward"
 
-
+#Relevant class to work on
 class GestureDetector(leap.Listener):
-    def __init__(self, canvas, rospubs):
+    def __init__(self, canvas):
         super().__init__()
         self.canvas = canvas
         self.prevhand = None
@@ -371,7 +401,20 @@ class GestureDetector(leap.Listener):
         self.eval_interval = 0.1
         self.last_eval = 0.0
         self.threshold = 0.85
+
+        #Stable frames, hertz, delta for motion detection
+        self.stableframes = 3
+        self.hertz = 0.10
+        self.delta = 0.01
+
+        #History for stable frames
+        self.history = deque(maxlen = self.stableframes)
+        self.last_time = 0
+        self.last_gesture = None
+        self.last_velocity = None
+        self.last_targetpos = None
     
+    #Tracks hands live and does feature extraction
     def on_tracking_event(self, event):
         self.canvas.render_hands(event)
 
@@ -397,7 +440,17 @@ class GestureDetector(leap.Listener):
             self.featurebuffer.clear()
             self.canvas.predict = self.smoothening.smooth("NAN")
     
+    #Predicts gesture
     def predict(self):
+
+        #If history is not initialized, initialize it
+        if not hasattr(self, "history"):
+            self.history = deque(maxlen = self.stableframes)
+            self.last_time = 0
+            self.last_gesture = None
+            self.last_velocity = None
+            self.last_targetpos = None
+
         currtime = time.perf_counter()
         if (len(self.featurebuffer) == 90 and currtime - self.last_eval >= self.eval_interval):
             self.last_eval = currtime
@@ -417,7 +470,53 @@ class GestureDetector(leap.Listener):
                 finalprediction = 'NAN'
                 if confidence > self.threshold:
                     finalprediction = prediction
-                    passgesture(finalprediction)
+
+                    self.history.append(finalprediction)
+                    
+                    if len(self.history) == self.stableframes:
+                        stable = all(
+                            history[0] == finalprediction and history[1] > self.threshold
+                            for history in self.history
+                        )
+                    else:
+                        stable = False
+                    
+                    if stable:
+                        action = brain.action(finalprediction)
+                        if action is not None:
+                            message = {
+                                "gesture": str(finalprediction),
+                                "confidence": float(confidence),
+                                "cmdid": int(action["cmdid"]),
+                                "velocity": action["velocity"].astype(float).tolist(),
+                                "targetpos": action["targetpos"].astype(float).tolist(),
+                                "grippercmd": int(action["grippercmd"]),
+                            }
+                            
+                            if finalprediction == self.last_gesture:
+                                pass
+                            else:
+                                curr = time.time()
+                                if curr - self.last_time >= self.hertz:
+                                    motion = False
+
+                                    if self.last_velocity is not None:
+                                        motion = True
+                                    else:
+                                        dv = np.linalg.norm(action["velocity"] - self.last_velocity)
+                                        tp = np.linalg.norm(action["targetpos"] - self.last_targetpos)
+                                        if dv > self.delta or tp > self.delta:
+                                            motion = True
+                                        if motion:
+                                            if MODE == "remote":
+                                                bridge.send(message)
+                                            else:
+                                                print(f"[LOCAL] Predicted gesture: {finalprediction} with confidence: {confidence}")
+                                                print(f"[Local] action: {message}")
+                                            self.last_time = curr
+                                            self.last_gesture = finalprediction
+                                            self.last_velocity = action["velocity"].copy()
+                                            self.last_targetpos = action["targetpos"].copy()
 
                 self.canvas.predict = self.smoothening.smooth(finalprediction)
             
@@ -427,7 +526,7 @@ class GestureDetector(leap.Listener):
 
 def run_pointing():
     canvas = Canvas()
-    detector = GestureDetector(canvas, ros_init())
+    detector = GestureDetector(canvas)
     connection = leap.Connection()
     connection.add_listener(detector)
     running = True

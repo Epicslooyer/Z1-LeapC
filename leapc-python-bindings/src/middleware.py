@@ -1,25 +1,43 @@
-import socket
+import websockets
+import asyncio
+import json
+import logging
 
-'''
-class ReceiverNode(Node):
+HOST = "0.0.0.0"
+PORT = 8765
+logging.basicConfig(level=logging.INFO)
+
+class LeapServer:
     def __init__(self):
-        super().__init__("receiver_node")
-        self.pub = self.create_publisher(String, "/gesture", 10)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(("0.0.0.0", 5005)) # Figure out which port for rosserver
-        self.get_logger().info("Receiver node initialized")
-        self.create_timer(0.001, self.read_packets)
+        self.clients = set()
+        self.loop = None
     
-    def read_packets(self):
+    async def register(self, websocket):
+        self.clients.add(websocket)
+        logging.info(f"New client connected: {websocket.remote_address}")
         try:
-            data, addr = self.sock.recvfrom(1024)
-            arr = [float(x) for x in data.decode().split(',')]
-            msg = String()
-            msg.data = str(arr)
-            self.pub.publish(msg)
-        except BlockingIOError:
+            async for message in websocket:
+                pass
+        finally:
+            self.clients.discard(websocket)
+            logging.info(f"Client disconnected: {websocket.remote_address}")
+    
+    async def broadcast(self, cmddata):
+        if not self.clients:
             return
-'''
+        
+        message = json.dumps(cmddata)
+        await asyncio.gather(*(c.send(message) for c in self.clients))
+    
+    async def start(self):
+        logging.info(f"Starting data server on ws://{HOST}:{PORT}")
+        async with websockets.serve(self.register, HOST, PORT):
+            await asyncio.Future()
+    
+    def background(self):
+        pass
 
-def passgesture(gesture):
-    print(f"Gesture: {gesture}")
+server = LeapServer()
+
+if __name__ == "__main__":
+    asyncio.run(server.start())
