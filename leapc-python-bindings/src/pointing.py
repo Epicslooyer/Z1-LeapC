@@ -361,7 +361,7 @@ class DirectionDetector(leap.Listener):
 
 
 class GestureDetector(leap.Listener):
-    def __init__(self, canvas):
+    def __init__(self, canvas, rospubs):
         super().__init__()
         self.canvas = canvas
         self.prevhand = None
@@ -427,7 +427,7 @@ class GestureDetector(leap.Listener):
 
 def run_pointing():
     canvas = Canvas()
-    detector = GestureDetector(canvas)
+    detector = GestureDetector(canvas, ros_init())
     connection = leap.Connection()
     connection.add_listener(detector)
     running = True
